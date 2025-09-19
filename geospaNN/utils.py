@@ -104,8 +104,6 @@ class LRScheduler():
     def __call__(self, val_loss):
         self.lr_scheduler.step(val_loss)
 
-
-
 class Sparse_B():
     """
     A sparse representation of the lower-triangular neighboring nxn matrix B_dense,
@@ -266,6 +264,7 @@ class NNGP_cov(Sparse_B):
             x_cor: Correlated X
         """
         assert x.shape[0] == self.n
+        import ipdb; ipdb.set_trace()
         return self.invmul(torch.sqrt(self.F_diag) * x)
 
     def decorrelate(self, x: torch.Tensor
@@ -371,6 +370,25 @@ def distance(coord1: torch.Tensor,
     coord2 = coord2.unsqueeze(1)
     dists = torch.sqrt(torch.sum((coord1 - coord2) ** 2, axis=-1))
     return dists
+
+def time_distance(times: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
+    """
+    Compute pairwise absolute time differences.
+
+    Parameters
+    ----------
+    times : (n_time,) tensor or array
+
+    Returns
+    -------
+    Dt : (n_time, n_time) tensor or array
+    """
+    if isinstance(times, torch.Tensor):
+        t = times.view(-1, 1).float()
+        return torch.abs(t - t.T)
+    else:
+        t = np.asarray(times).reshape(-1, 1)
+        return np.abs(t - t.T)
 
 def distance_np(coord1: np.array,
                 coord2: np.array
@@ -496,6 +514,7 @@ def make_bf(coord: torch.Tensor,  #### could add a make_bf from cov (resolved)
         Datta, Abhirup. "Sparse nearest neighbor Cholesky matrices in spatial statistics."
         arXiv preprint arXiv:2102.13299 (2021).
     """
+    #import ipdb; ipdb.set_trace()
     n = coord.shape[0]
     rank = make_rank(coord, neighbor_size)
     B = torch.zeros((n, neighbor_size))
@@ -515,6 +534,12 @@ def make_bf(coord: torch.Tensor,  #### could add a make_bf from cov (resolved)
             ind_list[i, range(len(ind))] = ind
             F[i] = F[i] - torch.inner(cov_vec, bi)
 
+    # Sparse_B(
+    # B: nxp array contains all non-zero values in B_dense, 
+    # Ind_list: The nxp index array indicating the location where values in B was in B_dense.
+    # )
+
+    #ipdb.set_trace()
     I_B = Sparse_B(torch.concatenate([torch.ones((n, 1)), -B], axis=1),
                    np.concatenate([np.arange(0, n).reshape(n, 1), ind_list], axis = 1))
 
@@ -613,6 +638,93 @@ def make_cov_full(dist: torch.Tensor | np.ndarray,
         else:
             cov += tau_sq * np.eye(n).squeeze() #### need improvement
     return cov
+
+def make_cov_full_temporal(
+        dist: torch.Tensor | np.ndarray,
+        times_dist: torch.Tensor | np.ndarray,
+        theta: tuple[float, float, float, float],
+        nuggets: Optional[bool] = False,) -> torch.Tensor | np.ndarray:
+    """Compose covariance matrix from the distance matrix with dense representation.
+
+    Compose a covariance matrix in the exponential covariance family (other options to be implemented) from the distance
+    matrix. The returned object class depends on the input distance matrix.
+
+    Parameters:
+        dist:
+            The nxn distance matrix
+        theta:
+            theta[0], theta[1], theta[2] represent sigma^2, phi, tau in the exponential covariance family.
+        nuggets:
+            Whether to include nuggets term in the covariance matrix (added to the diagonal).
+
+    Returns:
+        cov:
+            A covariance matrix.
+    """
+    sigma_sq, phi, tau, rho = theta
+    tau_sq = tau * sigma_sq
+    if isinstance(dist, float) or isinstance(dist, int):
+        dist = torch.Tensor(dist)
+        n = 1
+    else:
+        n = dist.shape[-1]
+    
+    if isinstance(dist, torch.Tensor):
+        cov_spatial = torch.exp(-phi * dist) # Spatial Covariance
+        cov_temporal = rho ** times_dist # Temporal Covariance
+        cov = sigma_sq * torch.kron(cov_spatial, cov_temporal)
+    else:
+        cov_spatial = np.exp(-phi * dist) # Spatial Covariance
+        cov_temporal = rho ** times_dist # Temporal Covariance
+        cov = sigma_sq * np.kron(cov_spatial, cov_temporal)
+    if nuggets:
+        shape_temp = list(cov.shape)[:-2] + [1 ,1]
+        if isinstance(dist, torch.Tensor):
+            cov += tau_sq * torch.eye(n).repeat(*shape_temp).squeeze()
+        else:
+            cov += tau_sq * np.eye(n).squeeze() #### need improvement
+    return cov
+
+def make_cov_temporal(
+             coord: torch.Tensor,
+             times: torch.Tensor,
+             theta: tuple[float, float, float, float],
+             NNGP: Optional[bool] = True,
+             neighbor_size: Optional[int] = 20
+             ) -> torch.Tensor:
+    """Compose covariance matrix.
+
+    Compose a covariance matrix in the exponential covariance family using the coordinates and spatial parameters.
+    NNGP approximation is introduced for efficient representation. (see https://arxiv.org/abs/2102.13299 for more details.)
+
+    Parameters:
+        coord:
+            The nxd covariate array.
+        theta:
+            theta[0], theta[1], theta[2] represent sigma^2, phi, tau in the exponential covariance family.
+        NNGP:
+            Whether use NNGP approximation (recommended and used by default).
+        neighbor_size:
+            Number of nearest neighbors used for NNGP approximation, default value is 20.
+
+    Returns:
+        cov:
+            A covariance matrix as torch.Tensor (dense representation) or NNGP_cov (sparse representation).
+
+    See Also:
+        Datta, Abhirup. "Sparse nearest neighbor Cholesky matrices in spatial statistics."
+        arXiv preprint arXiv:2102.13299 (2021).
+    """
+    if not NNGP:
+        dist = distance(coord, coord)
+        times_dist = time_distance(times)
+        cov = make_cov_full_temporal(dist, times_dist, theta, nuggets = True) #### could add a make_bf from cov (resolved)
+        return cov
+    else:
+        #import ipdb; ipdb.set_trace()
+        I_B, F_diag = make_bf(coord, theta[:3], neighbor_size) #### could merge into one step
+        cov = NNGP_cov(I_B.B, F_diag, I_B.Ind_list)
+        return cov
 
 def make_cov(coord: torch.Tensor,
              theta: tuple[float, float, float],
@@ -773,6 +885,7 @@ def rmvn(mu: torch.Tensor,
         res = torch.matmul(torch.randn(1, n), D.t()) + mu
     elif isinstance(cov, NNGP_cov):
         if sparse:
+            #import ipdb; ipdb.set_trace()
             res = cov.correlate(torch.randn(1, n).reshape(-1)) + mu
         else:
             warnings.warn("To be implemented.")
@@ -844,11 +957,14 @@ def make_bf_np(coord: np.ndarray,  #### could add a make_bf from cov (resolved)
 def Simulation(n: int, p:int,
                neighbor_size: int,
                fx: Callable,
-               theta: tuple[float, float, float],
+               theta: tuple[float, float, float, Optional[float]],
                coord: Optional[torch.tensor] = None,
+               times:Optional[torch.tensor] = None,
                range: tuple[float, float] = [0,1],
+               time_range: Optional[int] = 10,
                X_pattern: Optional[str] = "uniform",
-               sparse: Optional[bool] = True
+               sparse: Optional[bool] = True,
+               spatio_temporal: Optional[bool] = False
                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | NNGP_cov, torch.Tensor]:
     """Simulate spatial data
 
@@ -886,12 +1002,22 @@ def Simulation(n: int, p:int,
         corerr:
             Simulated spatial random effect.
     """
+    #import ipdb; ipdb.set_trace()
     if coord is None:
         coord = (range[1] - range[0]) * torch.rand(n, 2) + range[0]
-    sigma_sq, phi, tau = theta
-    tau_sq = tau * sigma_sq
 
-    cov = make_cov(coord, theta, neighbor_size)
+    if times is None and spatio_temporal:
+        times = torch.arange(1,time_range+1)
+
+    if spatio_temporal:
+        sigma_sq, phi, tau, rho = theta
+        tau_sq = tau * sigma_sq
+        cov = make_cov_temporal(coord, times, theta, neighbor_size=neighbor_size)
+    else:
+        sigma_sq, phi, tau = theta[:3]
+        tau_sq = tau * sigma_sq
+        cov = make_cov(coord, theta, neighbor_size)
+
     if X_pattern is "uniform":
         X = torch.rand(n, p)
     elif X_pattern is "correlated":
