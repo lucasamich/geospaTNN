@@ -14,3 +14,11 @@ demo_code/randomForestsGLS_demo.nb.html
 # vignette
 /vignette/*
 !/vignette/vignette.pdf
+
+# Virtual Environment
+/.venv/*
+
+# Examples folder
+/examples/code_explorer_cache/*
+/examples/code_explorer_files/*
+/examples/code_explorer*
