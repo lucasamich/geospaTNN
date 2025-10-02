@@ -264,7 +264,7 @@ class NNGP_cov(Sparse_B):
             x_cor: Correlated X
         """
         assert x.shape[0] == self.n
-        import ipdb; ipdb.set_trace()
+        #import ipdb; ipdb.set_trace()
         return self.invmul(torch.sqrt(self.F_diag) * x)
 
     def decorrelate(self, x: torch.Tensor
@@ -639,6 +639,24 @@ def make_cov_full(dist: torch.Tensor | np.ndarray,
             cov += tau_sq * np.eye(n).squeeze() #### need improvement
     return cov
 
+def make_Q(
+    times_dist: torch.Tensor | np.ndarray,
+    theta: tuple[float, float, float, float]) -> torch.Tensor | np.ndarray:
+    """
+       Note: Creating a full matrix and then using as.sparse is bad practice. You should create the i, j, x indices/values.
+    """
+    N = times_dist.shape[0]
+    rho = theta[-1]
+    main_diag = torch.full((N,), 1 + rho**2)
+    # Create the off-diagonal vector
+    off_diag = torch.full((N - 1,), -rho)
+    # Construct the matrix from the diagonal vectors
+    Q = torch.diag(main_diag) + torch.diag(off_diag, diagonal=1) + torch.diag(off_diag, diagonal=-1)
+    Q[0,0] = 1
+    Q[-1,-1] = 1
+
+    return Q
+
 def make_cov_full_temporal(
         dist: torch.Tensor | np.ndarray,
         times_dist: torch.Tensor | np.ndarray,
@@ -718,7 +736,7 @@ def make_cov_temporal(
     if not NNGP:
         dist = distance(coord, coord)
         times_dist = time_distance(times)
-        cov = make_cov_full_temporal(dist, times_dist, theta, nuggets = True) #### could add a make_bf from cov (resolved)
+        cov = make_cov_full_temporal(dist, times_dist, theta, nuggets = False) #### could add a make_bf from cov (resolved)
         return cov
     else:
         #import ipdb; ipdb.set_trace()
@@ -880,6 +898,7 @@ def rmvn(mu: torch.Tensor,
     """
     n = len(mu) #### Check dimensionality
     if isinstance(cov, torch.Tensor):
+        #import ipdb; ipdb.set_trace()
         if n >= 2000: warnings.warn("Too large for cholesky decomposition, please try to use NNGP")
         D = torch.linalg.cholesky(cov)
         res = torch.matmul(torch.randn(1, n), D.t()) + mu
@@ -894,8 +913,6 @@ def rmvn(mu: torch.Tensor,
         return
 
     return  res.reshape(-1)
-
-
 
 '''
 def make_bf_np(coord: np.ndarray,  #### could add a make_bf from cov (resolved)
@@ -964,7 +981,8 @@ def Simulation(n: int, p:int,
                time_range: Optional[int] = 10,
                X_pattern: Optional[str] = "uniform",
                sparse: Optional[bool] = True,
-               spatio_temporal: Optional[bool] = False
+               spatio_temporal: Optional[bool] = False,
+               isNNGP: Optional[bool] = True
                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | NNGP_cov, torch.Tensor]:
     """Simulate spatial data
 
@@ -1012,11 +1030,12 @@ def Simulation(n: int, p:int,
     if spatio_temporal:
         sigma_sq, phi, tau, rho = theta
         tau_sq = tau * sigma_sq
-        cov = make_cov_temporal(coord, times, theta, neighbor_size=neighbor_size)
+        cov = make_cov_temporal(coord, times, theta, neighbor_size=neighbor_size, NNGP=isNNGP)
     else:
-        sigma_sq, phi, tau = theta[:3]
+        theta = theta[:3]
+        sigma_sq, phi, tau = theta
         tau_sq = tau * sigma_sq
-        cov = make_cov(coord, theta, neighbor_size)
+        cov = make_cov(coord=coord, theta=theta, NNGP=isNNGP, neighbor_size=neighbor_size)
 
     if X_pattern is "uniform":
         X = torch.rand(n, p)
@@ -1025,8 +1044,17 @@ def Simulation(n: int, p:int,
                                    torch.tensor([theta[0], 5*theta[1], theta[2]]), range=[0, 1])
         X = X.reshape(-1, p)
         X = (X - X.min()) / (X.max() - X.min())
-    corerr = rmvn(torch.zeros(n), cov, sparse)
-    Y = fx(X).reshape(-1) + corerr + torch.sqrt(tau_sq) * torch.randn(n)
+    
+    if spatio_temporal:
+        X = torch.rand(n*time_range, p)
+        corerr = rmvn(torch.zeros(n*time_range), cov, sparse)
+        Y = fx(X).reshape(-1) + corerr + torch.sqrt(tau_sq) * torch.randn(n*time_range)
+    else:
+        corerr = rmvn(torch.zeros(n), cov, sparse)
+        Y = fx(X).reshape(-1) + corerr + torch.sqrt(tau_sq) * torch.randn(n)
+
+    # y \sim N(\mu(X), C^{-1} + \tau^2 \mathbf{I}_n)
+    
 
     return X, Y, coord, cov, corerr
 
@@ -1302,6 +1330,7 @@ def theta_update(w: torch.Tensor,
 
         res = scipy.optimize.minimize(likelihood, theta, method = 'L-BFGS-B',
                                       bounds = [(0, None), (0, None), (min_tau, None)])
+        print("Not BRISC")
         print('Theta estimated as')
         print(res.x)
         return res.x
@@ -1311,6 +1340,7 @@ def theta_update(w: torch.Tensor,
         theta[2] = max(theta[2], min_tau)
         print('Theta estimated as')
         print(theta)
+        print("BRISC")
         return theta
 
 
