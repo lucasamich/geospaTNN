@@ -22,3 +22,13 @@ demo_code/randomForestsGLS_demo.nb.html
 /examples/code_explorer_cache/*
 /examples/code_explorer_files/*
 /examples/code_explorer*
+
+# emacs temporary files
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
