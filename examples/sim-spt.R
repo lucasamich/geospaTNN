@@ -53,3 +53,10 @@ for (t in c(1, 2, 19, 20)) {
              xlab = "x", ylab = "y")
   title(sprintf("t = %d", t))
 }
+
+output_spt <- do.call(rbind, rf_spt)
+space <- rep(seq_len(length(rf_spt[[1]])),
+             rep = length(rf_spt))
+time <- sapply(seq_along(rf_spt),
+               \(x) rep(x, length(rf_spt[[1]]))) |>
+  c()
