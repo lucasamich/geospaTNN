@@ -3,8 +3,8 @@ library(BRISC)
 
 ##--- simulate a separable spatiotemporal Gaussian field (as in sim-spt.R) ----
 
-nx <- 50
-ny <- 50
+nx <- 100
+ny <- 100
 cov_model <- "Exponential"
 range     <- .5   ## fields' aRange
 sig       <- 1    ## marginal sd of the spatial process (sigma.sq.true = sig^2)
@@ -18,7 +18,7 @@ obj <- circulantEmbeddingSetup(grid,
 
 set.seed(223)
 
-nt <- 20
+nt <- 50
 ## AR(1) parameter
 temp_corr <- .6
 
